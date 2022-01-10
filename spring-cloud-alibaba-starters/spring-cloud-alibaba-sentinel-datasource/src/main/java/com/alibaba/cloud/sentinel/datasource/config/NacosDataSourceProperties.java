@@ -32,6 +32,12 @@ public class NacosDataSourceProperties extends AbstractDataSourceProperties {
 
 	private String serverAddr;
 
+	private String contextPath;
+
+	private String username;
+
+	private String password;
+
 	@NotEmpty
 	private String groupId = "DEFAULT_GROUP";
 
@@ -65,6 +71,30 @@ public class NacosDataSourceProperties extends AbstractDataSourceProperties {
 
 	public void setServerAddr(String serverAddr) {
 		this.serverAddr = serverAddr;
+	}
+
+	public String getContextPath() {
+		return contextPath;
+	}
+
+	public void setContextPath(String contextPath) {
+		this.contextPath = contextPath;
+	}
+
+	public String getUsername() {
+		return username;
+	}
+
+	public void setUsername(String username) {
+		this.username = username;
+	}
+
+	public String getPassword() {
+		return password;
+	}
+
+	public void setPassword(String password) {
+		this.password = password;
 	}
 
 	public String getGroupId() {

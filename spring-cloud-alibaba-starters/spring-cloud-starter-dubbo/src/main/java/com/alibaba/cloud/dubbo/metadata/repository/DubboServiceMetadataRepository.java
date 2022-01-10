@@ -16,14 +16,15 @@
 
 package com.alibaba.cloud.dubbo.metadata.repository;
 
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
+import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
-import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 import javax.annotation.PostConstruct;
@@ -32,15 +33,20 @@ import com.alibaba.cloud.dubbo.env.DubboCloudProperties;
 import com.alibaba.cloud.dubbo.http.matcher.RequestMetadataMatcher;
 import com.alibaba.cloud.dubbo.metadata.DubboRestServiceMetadata;
 import com.alibaba.cloud.dubbo.metadata.RequestMetadata;
+import com.alibaba.cloud.dubbo.metadata.RevisionResolver;
+import com.alibaba.cloud.dubbo.metadata.ServiceInfo;
 import com.alibaba.cloud.dubbo.metadata.ServiceRestMetadata;
 import com.alibaba.cloud.dubbo.registry.event.SubscribedServicesChangedEvent;
 import com.alibaba.cloud.dubbo.service.DubboMetadataService;
 import com.alibaba.cloud.dubbo.service.DubboMetadataServiceExporter;
 import com.alibaba.cloud.dubbo.service.DubboMetadataServiceProxy;
+import com.alibaba.cloud.dubbo.util.DubboMetadataUtils;
 import com.alibaba.cloud.dubbo.util.JSONUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.type.TypeFactory;
 import org.apache.dubbo.common.URL;
+import org.apache.dubbo.common.constants.CommonConstants;
+import org.apache.dubbo.common.utils.CollectionUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -60,15 +66,15 @@ import org.springframework.util.MultiValueMap;
 
 import static com.alibaba.cloud.dubbo.env.DubboCloudProperties.ALL_DUBBO_SERVICES;
 import static com.alibaba.cloud.dubbo.http.DefaultHttpRequest.builder;
-import static java.lang.String.format;
 import static java.lang.String.valueOf;
-import static java.util.Collections.emptyList;
 import static java.util.Collections.emptySet;
-import static java.util.Collections.unmodifiableList;
 import static java.util.Collections.unmodifiableMap;
 import static java.util.Collections.unmodifiableSet;
-import static org.apache.dubbo.common.constants.CommonConstants.APPLICATION_KEY;
+import static org.apache.dubbo.common.constants.CommonConstants.GROUP_KEY;
+import static org.apache.dubbo.common.constants.CommonConstants.PROTOCOL_KEY;
 import static org.apache.dubbo.common.constants.CommonConstants.VERSION_KEY;
+import static org.apache.dubbo.registry.client.metadata.ServiceInstanceMetadataUtils.METADATA_SERVICE_PREFIX;
+import static org.apache.dubbo.registry.client.metadata.ServiceInstanceMetadataUtils.METADATA_SERVICE_URLS_PROPERTY_NAME;
 import static org.springframework.util.CollectionUtils.isEmpty;
 import static org.springframework.util.StringUtils.hasText;
 
@@ -84,19 +90,21 @@ public class DubboServiceMetadataRepository
 	/**
 	 * The prefix of {@link DubboMetadataService} : "dubbo.metadata-service.".
 	 */
-	public static final String DUBBO_METADATA_SERVICE_PREFIX = "dubbo.metadata-service.";
+	@Deprecated
+	public static final String DUBBO_METADATA_SERVICE_PREFIX = METADATA_SERVICE_PREFIX;
 
 	/**
 	 * The {@link URL URLs} property name of {@link DubboMetadataService} :
 	 * "dubbo.metadata-service.urls".
 	 */
-	public static final String DUBBO_METADATA_SERVICE_URLS_PROPERTY_NAME = DUBBO_METADATA_SERVICE_PREFIX
-			+ "urls";
+	@Deprecated
+	public static final String DUBBO_METADATA_SERVICE_URLS_PROPERTY_NAME = METADATA_SERVICE_URLS_PROPERTY_NAME;
 
 	/**
-	 * The {@link String#format(String, Object...) pattern} of dubbo protocols port.
+	 * The key of dubbo metadata revision. copyed from
+	 * ServiceInstanceMetadataUtils.EXPORTED_SERVICES_REVISION_PROPERTY_NAME.
 	 */
-	public static final String DUBBO_PROTOCOLS_PORT_PROPERTY_NAME_PATTERN = "dubbo.protocols.%s.port";
+	public static String EXPORTED_SERVICES_REVISION_PROPERTY_NAME = "dubbo.metadata.revision";
 
 	private final Logger logger = LoggerFactory.getLogger(getClass());
 
@@ -108,31 +116,17 @@ public class DubboServiceMetadataRepository
 	private final Object monitor = new Object();
 
 	/**
-	 * A {@link Set} of service names that had been initialized.
-	 */
-	private final Set<String> initializedServices = new LinkedHashSet<>();
-
-	/**
 	 * All exported {@link URL urls} {@link Map} whose key is the return value of
 	 * {@link URL#getServiceKey()} method and value is the {@link List} of {@link URL
 	 * URLs}.
 	 */
 	private final MultiValueMap<String, URL> allExportedURLs = new LinkedMultiValueMap<>();
 
-	// =================================== Registration
-	// =================================== //
-	/**
-	 * The subscribed {@link URL urls} {@link Map} of {@link DubboMetadataService}, whose
-	 * key is the return value of {@link URL#getServiceKey()} method and value is the
-	 * {@link List} of {@link URL URLs}.
-	 */
-	private final MultiValueMap<String, URL> subscribedDubboMetadataServiceURLs = new LinkedMultiValueMap<>();
+	// ======================== Registration ======================== //
 
-	// ====================================================================================
-	// //
+	// ============================================================== //
 
-	// =================================== Subscription
-	// =================================== //
+	// ======================== Subscription ======================== //
 	/**
 	 * A Map to store REST metadata temporary, its' key is the special service name for a
 	 * Dubbo service, the value is a JSON content of JAX-RS or Spring MVC REST metadata
@@ -142,24 +136,20 @@ public class DubboServiceMetadataRepository
 
 	private ApplicationEventPublisher applicationEventPublisher;
 
-	// ====================================================================================
-	// //
+	// =============================================================== //
 
-	// =================================== REST Metadata
-	// ================================== //
+	// ======================== REST Metadata ======================== //
 	private volatile Set<String> subscribedServices = emptySet();
 
 	/**
 	 * Key is application name Value is Map&lt;RequestMetadata,
 	 * DubboRestServiceMetadata&gt;.
 	 */
-	private Map<String, Map<RequestMetadataMatcher, DubboRestServiceMetadata>> dubboRestServiceMetadataRepository = newHashMap();
+	private final Map<String, Map<RequestMetadataMatcher, DubboRestServiceMetadata>> dubboRestServiceMetadataRepository = newHashMap();
 
-	// ====================================================================================
-	// //
+	// =============================================================== //
 
-	// =================================== Dependencies
-	// =================================== //
+	// ======================== Dependencies ========================= //
 
 	@Autowired
 	private DubboCloudProperties dubboCloudProperties;
@@ -171,7 +161,7 @@ public class DubboServiceMetadataRepository
 	private DiscoveryClient discoveryClient;
 
 	@Autowired
-	private MetadataServiceInstanceSelector metadataServiceInstanceSelector;
+	private ServiceInstanceSelector serviceInstanceSelector;
 
 	@Autowired
 	private JSONUtils jsonUtils;
@@ -179,14 +169,16 @@ public class DubboServiceMetadataRepository
 	@Autowired
 	private InetUtils inetUtils;
 
+	@Autowired
+	private DubboMetadataUtils dubboMetadataUtils;
+
 	@Value("${spring.application.name}")
 	private String currentApplicationName;
 
 	@Autowired
 	private DubboMetadataServiceExporter dubboMetadataServiceExporter;
 
-	// ====================================================================================
-	// //
+	// =============================================================== //
 
 	private static <K, V> Map<K, V> getMap(Map<String, Map<K, V>> repository,
 			String key) {
@@ -194,12 +186,7 @@ public class DubboServiceMetadataRepository
 	}
 
 	private static <K, V> V getOrDefault(Map<K, V> source, K key, V defaultValue) {
-		V value = source.get(key);
-		if (value == null) {
-			value = defaultValue;
-			source.put(key, value);
-		}
-		return value;
+		return source.computeIfAbsent(key, k -> defaultValue);
 	}
 
 	private static <K, V> Map<K, V> newHashMap() {
@@ -244,9 +231,6 @@ public class DubboServiceMetadataRepository
 		dispatchEvent(new SubscribedServicesChangedEvent(this, oldSubscribedServices,
 				newSubscribedServices));
 
-		// clear old one, help GC
-		oldSubscribedServices.clear();
-
 		return newSubscribedServices.stream();
 	}
 
@@ -256,13 +240,14 @@ public class DubboServiceMetadataRepository
 
 	@Override
 	public void afterSingletonsInstantiated() {
-		initializeMetadata();
+		// inited by DubboCloudRegistry.preInit() @theonefx
+		// initializeMetadata();
 	}
 
 	/**
 	 * Initialize the metadata.
 	 */
-	private void initializeMetadata() {
+	public void initializeMetadata() {
 		doGetSubscribedServices().forEach(this::initializeMetadata);
 		if (logger.isInfoEnabled()) {
 			logger.info("The metadata of Dubbo services has been initialized");
@@ -274,38 +259,23 @@ public class DubboServiceMetadataRepository
 	 * @param serviceName service of name
 	 */
 	public void initializeMetadata(String serviceName) {
-		synchronized (monitor) {
-			if (initializedServices.contains(serviceName)) {
-				if (logger.isDebugEnabled()) {
-					logger.debug(
-							"The metadata of Dubbo service[name : {}] has been initialized",
-							serviceName);
-				}
-			}
-			else {
-				if (logger.isInfoEnabled()) {
-					logger.info(
-							"The metadata of Dubbo service[name : {}] is about to be initialized",
-							serviceName);
-				}
+		initDubboRestServiceMetadataRepository(serviceName);
+	}
 
-				initSubscribedDubboMetadataService(serviceName);
-				// mark this service name having been initialized
-				initializedServices.add(serviceName);
-			}
-		}
+	private DubboMetadataService getProxy(String serviceName) {
+		return dubboMetadataConfigServiceProxy.getProxy(serviceName);
 	}
 
 	/**
 	 * Remove the metadata and initialized service of Dubbo Services if no there is no
 	 * service instance.
 	 * @param serviceName the service name
+	 * @param url the meta service url
 	 */
-	public void removeMetadataAndInitializedService(String serviceName) {
+	public void removeMetadataAndInitializedService(String serviceName, URL url) {
 		synchronized (monitor) {
-			initializedServices.remove(serviceName);
+			dubboMetadataConfigServiceProxy.removeProxy(serviceName);
 			dubboRestServiceMetadataRepository.remove(serviceName);
-			subscribedDubboMetadataServiceURLs.remove(serviceName);
 		}
 	}
 
@@ -324,19 +294,42 @@ public class DubboServiceMetadataRepository
 
 		addDubboMetadataServiceURLsMetadata(metadata, dubboMetadataServiceURLs);
 		addDubboProtocolsPortMetadata(metadata);
+		addRevision(metadata);
 
 		return Collections.unmodifiableMap(metadata);
 	}
 
+	private void addRevision(Map<String, String> metadata) {
+		metadata.put(EXPORTED_SERVICES_REVISION_PROPERTY_NAME, calAndGetRevision());
+	}
+
+	public String calAndGetRevision() {
+		if (CollectionUtils.isEmptyMap(allExportedURLs)) {
+			return RevisionResolver.getEmptyRevision();
+		}
+		else {
+			List<String> descs = new ArrayList<>(allExportedURLs.size());
+			for (Map.Entry<String, List<URL>> entry : allExportedURLs.entrySet()) {
+				entry.getValue().stream().map(ServiceInfo::new)
+						.map(ServiceInfo::toDescString).forEach(descs::add);
+			}
+
+			descs.sort(String::compareTo);
+
+			return RevisionResolver.calRevision(descs.toString());
+		}
+	}
+
 	private void removeDubboMetadataServiceURLs(List<URL> dubboMetadataServiceURLs) {
-		dubboMetadataServiceURLs.forEach(this::unexportURL);
+		dubboMetadataServiceURLs.stream().map(URL::getServiceKey).distinct()
+				.forEach(allExportedURLs::remove);
+		// dubboMetadataServiceURLs.forEach(this::unexportURL);
 	}
 
 	private void addDubboMetadataServiceURLsMetadata(Map<String, String> metadata,
 			List<URL> dubboMetadataServiceURLs) {
 		String dubboMetadataServiceURLsJSON = jsonUtils.toJSON(dubboMetadataServiceURLs);
-		metadata.put(DUBBO_METADATA_SERVICE_URLS_PROPERTY_NAME,
-				dubboMetadataServiceURLsJSON);
+		metadata.put(METADATA_SERVICE_URLS_PROPERTY_NAME, dubboMetadataServiceURLsJSON);
 	}
 
 	private void addDubboProtocolsPortMetadata(Map<String, String> metadata) {
@@ -347,15 +340,6 @@ public class DubboServiceMetadataRepository
 			String propertyValue = valueOf(url.getPort());
 			metadata.put(propertyName, propertyValue);
 		});
-	}
-
-	/**
-	 * Get the property name of Dubbo Protocol.
-	 * @param protocol Dubbo Protocol
-	 * @return non-null
-	 */
-	public String getDubboProtocolPropertyName(String protocol) {
-		return format(DUBBO_PROTOCOLS_PORT_PROPERTY_NAME_PATTERN, protocol);
 	}
 
 	/**
@@ -379,25 +363,6 @@ public class DubboServiceMetadataRepository
 		return unmodifiableSet(serviceRestMetadata);
 	}
 
-	public List<URL> findSubscribedDubboMetadataServiceURLs(String serviceName,
-			String group, String version, String protocol) {
-		String serviceKey = URL.buildKey(serviceName, group, version);
-
-		List<URL> urls = null;
-
-		synchronized (monitor) {
-			urls = subscribedDubboMetadataServiceURLs.get(serviceKey);
-		}
-
-		if (isEmpty(urls)) {
-			return emptyList();
-		}
-
-		return hasText(protocol) ? urls.stream()
-				.filter(url -> url.getProtocol().equalsIgnoreCase(protocol))
-				.collect(Collectors.toList()) : unmodifiableList(urls);
-	}
-
 	/**
 	 * The specified service is subscribe or not.
 	 * @param serviceName the service name
@@ -413,7 +378,7 @@ public class DubboServiceMetadataRepository
 		String ipAddress = hostInfo.getIpAddress();
 		// To use InetUtils to set IP if they are different
 		// issue :
-		// https://github.com/spring-cloud-incubator/spring-cloud-alibaba/issues/589
+		// https://github.com/alibaba/spring-cloud-alibaba/issues/589
 		if (!Objects.equals(url.getHost(), ipAddress)) {
 			actualURL = url.setHost(ipAddress);
 		}
@@ -423,7 +388,7 @@ public class DubboServiceMetadataRepository
 	public void unexportURL(URL url) {
 		String key = url.getServiceKey();
 		// NPE issue :
-		// https://github.com/spring-cloud-incubator/spring-cloud-alibaba/issues/591
+		// https://github.com/alibaba/spring-cloud-alibaba/issues/591
 		List<URL> urls = allExportedURLs.get(key);
 		if (!isEmpty(urls)) {
 			urls.remove(url);
@@ -447,30 +412,45 @@ public class DubboServiceMetadataRepository
 		return allExportedURLs.keySet();
 	}
 
-	/**
-	 * Get the {@link URL urls} that {@link DubboMetadataService} exported by the
-	 * specified {@link ServiceInstance}.
-	 * @param serviceInstance {@link ServiceInstance}
-	 * @return the mutable {@link URL urls}
-	 */
-	public List<URL> getDubboMetadataServiceURLs(ServiceInstance serviceInstance) {
-		Map<String, String> metadata = serviceInstance.getMetadata();
-		String dubboURLsJSON = metadata.get(DUBBO_METADATA_SERVICE_URLS_PROPERTY_NAME);
-		return jsonUtils.toURLs(dubboURLsJSON);
-	}
-
 	public Integer getDubboProtocolPort(ServiceInstance serviceInstance,
 			String protocol) {
-		String protocolProperty = getDubboProtocolPropertyName(protocol);
-		Map<String, String> metadata = serviceInstance.getMetadata();
-		String protocolPort = metadata.get(protocolProperty);
-		return hasText(protocolPort) ? Integer.valueOf(protocolPort) : null;
+		return dubboMetadataUtils.getDubboProtocolPort(serviceInstance, protocol);
+	}
+
+	private String getDubboProtocolPropertyName(String protocol) {
+		return dubboMetadataUtils.getDubboProtocolPropertyName(protocol);
 	}
 
 	public List<URL> getExportedURLs(String serviceInterface, String group,
 			String version) {
-		String serviceKey = URL.buildKey(serviceInterface, group, version);
-		return allExportedURLs.getOrDefault(serviceKey, Collections.emptyList());
+		if (group != null) {
+			List<URL> urls = new LinkedList<>();
+			if (CommonConstants.ANY_VALUE.equals(group)) {
+				String serviceKey = URL.buildKey(serviceInterface, group, version);
+				String expectKey = serviceKey.substring(2);
+				for (String key : allExportedURLs.keySet()) {
+					if (key.endsWith(expectKey)) {
+						urls.addAll(allExportedURLs.get(key));
+					}
+				}
+			}
+			else {
+				String[] groups = group.split(CommonConstants.COMMA_SEPARATOR);
+				for (String expectKey : groups) {
+					String serviceKey = URL.buildKey(serviceInterface, expectKey,
+							version);
+					List<URL> urlList = allExportedURLs.get(serviceKey);
+					if (urlList != null) {
+						urls.addAll(urlList);
+					}
+				}
+			}
+			return urls;
+		}
+		else {
+			String serviceKey = URL.buildKey(serviceInterface, null, version);
+			return allExportedURLs.getOrDefault(serviceKey, Collections.emptyList());
+		}
 	}
 
 	/**
@@ -480,6 +460,11 @@ public class DubboServiceMetadataRepository
 	protected void initDubboRestServiceMetadataRepository(String serviceName) {
 
 		if (dubboRestServiceMetadataRepository.containsKey(serviceName)) {
+			if (logger.isDebugEnabled()) {
+				logger.debug(
+						"The metadata of Dubbo service[name : {}] has been initialized",
+						serviceName);
+			}
 			return;
 		}
 
@@ -588,8 +573,7 @@ public class DubboServiceMetadataRepository
 
 		Set<ServiceRestMetadata> metadata = emptySet();
 
-		DubboMetadataService dubboMetadataService = dubboMetadataConfigServiceProxy
-				.getProxy(serviceName);
+		DubboMetadataService dubboMetadataService = getProxy(serviceName);
 
 		if (dubboMetadataService != null) {
 			try {
@@ -614,43 +598,29 @@ public class DubboServiceMetadataRepository
 		subscribedServices.remove(currentApplicationName);
 	}
 
-	protected void initSubscribedDubboMetadataService(String serviceName) {
-		metadataServiceInstanceSelector.choose(discoveryClient.getInstances(serviceName))
-				.map(this::getDubboMetadataServiceURLs)
-				.ifPresent(dubboMetadataServiceURLs -> {
-					dubboMetadataServiceURLs.forEach(dubboMetadataServiceURL -> {
-						try {
-							initSubscribedDubboMetadataServiceURL(
-									dubboMetadataServiceURL);
-							initDubboMetadataServiceProxy(dubboMetadataServiceURL);
-						}
-						catch (Throwable e) {
-							if (logger.isErrorEnabled()) {
-								logger.error(e.getMessage(), e);
-							}
-						}
-					});
-				});
-		initDubboRestServiceMetadataRepository(serviceName);
-	}
-
-	private void initSubscribedDubboMetadataServiceURL(URL dubboMetadataServiceURL) {
-		// add subscriptions
-		String serviceKey = dubboMetadataServiceURL.getServiceKey();
-		subscribedDubboMetadataServiceURLs.add(serviceKey, dubboMetadataServiceURL);
-	}
-
-	private void initDubboMetadataServiceProxy(URL dubboMetadataServiceURL) {
-		String serviceName = dubboMetadataServiceURL.getParameter(APPLICATION_KEY);
-		String version = dubboMetadataServiceURL.getParameter(VERSION_KEY);
-		// Initialize DubboMetadataService with right version
-		dubboMetadataConfigServiceProxy.initProxy(serviceName, version);
-	}
-
 	@Override
 	public void setApplicationEventPublisher(
 			ApplicationEventPublisher applicationEventPublisher) {
 		this.applicationEventPublisher = applicationEventPublisher;
+	}
+
+	public List<URL> findSubscribedDubboMetadataServiceURLs(URL subscribedURL) {
+		// The parameter of "group" as the service name
+		String serviceInterface = subscribedURL.getServiceInterface();
+		String group = subscribedURL.getParameter(GROUP_KEY);
+		String version = subscribedURL.getParameter(VERSION_KEY);
+		String protocol = subscribedURL.getParameter(PROTOCOL_KEY);
+		List<ServiceInstance> serviceInstances = discoveryClient.getInstances(group);
+		List<URL> urls = dubboMetadataUtils.getDubboMetadataServiceURLs(serviceInstances,
+				serviceInterface, version, protocol);
+
+		if (logger.isInfoEnabled()) {
+			logger.info(
+					"The DubboMetadataService of service [name : {} , instances : {}] URLs[protocol : {} , size : {}] has been subscribed.",
+					group, serviceInstances.size(), protocol, urls.size());
+		}
+
+		return urls;
 	}
 
 }

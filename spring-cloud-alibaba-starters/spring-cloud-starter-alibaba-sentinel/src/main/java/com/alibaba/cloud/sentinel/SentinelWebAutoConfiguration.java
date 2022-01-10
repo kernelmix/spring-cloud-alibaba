@@ -36,7 +36,6 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.util.StringUtils;
-import org.springframework.web.servlet.config.annotation.InterceptorRegistry;
 import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
 
 /**
@@ -65,23 +64,6 @@ public class SentinelWebAutoConfiguration implements WebMvcConfigurer {
 	@Autowired
 	private Optional<RequestOriginParser> requestOriginParserOptional;
 
-	@Autowired
-	private Optional<SentinelWebInterceptor> sentinelWebInterceptorOptional;
-
-	@Override
-	public void addInterceptors(InterceptorRegistry registry) {
-		if (!sentinelWebInterceptorOptional.isPresent()) {
-			return;
-		}
-		SentinelProperties.Filter filterConfig = properties.getFilter();
-		registry.addInterceptor(sentinelWebInterceptorOptional.get())
-				.order(filterConfig.getOrder())
-				.addPathPatterns(filterConfig.getUrlPatterns());
-		log.info(
-				"[Sentinel Starter] register SentinelWebInterceptor with urlPatterns: {}.",
-				filterConfig.getUrlPatterns());
-	}
-
 	@Bean
 	@ConditionalOnProperty(name = "spring.cloud.sentinel.filter.enabled",
 			matchIfMissing = true)
@@ -96,6 +78,7 @@ public class SentinelWebAutoConfiguration implements WebMvcConfigurer {
 	public SentinelWebMvcConfig sentinelWebMvcConfig() {
 		SentinelWebMvcConfig sentinelWebMvcConfig = new SentinelWebMvcConfig();
 		sentinelWebMvcConfig.setHttpMethodSpecify(properties.getHttpMethodSpecify());
+		sentinelWebMvcConfig.setWebContextUnify(properties.getWebContextUnify());
 
 		if (blockExceptionHandlerOptional.isPresent()) {
 			blockExceptionHandlerOptional
@@ -115,6 +98,13 @@ public class SentinelWebAutoConfiguration implements WebMvcConfigurer {
 		urlCleanerOptional.ifPresent(sentinelWebMvcConfig::setUrlCleaner);
 		requestOriginParserOptional.ifPresent(sentinelWebMvcConfig::setOriginParser);
 		return sentinelWebMvcConfig;
+	}
+
+	@Bean
+	@ConditionalOnProperty(name = "spring.cloud.sentinel.filter.enabled",
+			matchIfMissing = true)
+	public SentinelWebMvcConfigurer sentinelWebMvcConfigurer() {
+		return new SentinelWebMvcConfigurer();
 	}
 
 }

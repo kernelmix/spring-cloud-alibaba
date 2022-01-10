@@ -78,6 +78,9 @@ public class DubboGenericServiceFactory {
 		String interfaceName = serviceClass.getName();
 		ReferenceBean<GenericService> referenceBean = build(interfaceName, version,
 				serviceName, emptyMap());
+		if (DubboMetadataService.class == serviceClass) {
+			referenceBean.setRouter("-default,revisionRouter");
+		}
 		return referenceBean.get();
 	}
 
@@ -95,10 +98,9 @@ public class DubboGenericServiceFactory {
 	private ReferenceBean<GenericService> build(String interfaceName, String version,
 			String group, Map<String, Object> dubboTranslatedAttributes) {
 
-		Integer key = Objects.hash(interfaceName, version, group,
-				dubboTranslatedAttributes);
+		String key = createKey(interfaceName, version, group, dubboTranslatedAttributes);
 
-		return cache.computeIfAbsent(group + key, k -> {
+		return cache.computeIfAbsent(key, k -> {
 			ReferenceBean<GenericService> referenceBean = new ReferenceBean<>();
 			referenceBean.setGeneric(true);
 			referenceBean.setInterface(interfaceName);
@@ -108,6 +110,12 @@ public class DubboGenericServiceFactory {
 			bindReferenceBean(referenceBean, dubboTranslatedAttributes);
 			return referenceBean;
 		});
+	}
+
+	private String createKey(String interfaceName, String version, String group,
+			Map<String, Object> dubboTranslatedAttributes) {
+		return group + "#"
+				+ Objects.hash(interfaceName, version, group, dubboTranslatedAttributes);
 	}
 
 	private void bindReferenceBean(ReferenceBean<GenericService> referenceBean,
@@ -155,7 +163,7 @@ public class DubboGenericServiceFactory {
 		cache.clear();
 	}
 
-	public synchronized void destroy(String serviceName) {
+	public void destroy(String serviceName) {
 		Set<String> removeGroups = new HashSet<>(cache.keySet());
 		for (String key : removeGroups) {
 			if (key.contains(serviceName)) {
